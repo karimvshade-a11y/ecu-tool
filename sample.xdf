@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<XDDefinition>
+    <TABLE name="Ignition Timing" address="0x2000" rows="10" cols="10">
+        <scaling factor="0.5" offset="-10" />
+    </TABLE>
+    <TABLE name="Target AFR" address="0x2002" rows="1" cols="1">
+        <scaling factor="0.1" offset="0" />
+    </TABLE>
+</XDDefinition>

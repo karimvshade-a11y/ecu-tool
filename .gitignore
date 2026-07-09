@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.modified
+*.modified.fixed
