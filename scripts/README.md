@@ -1,5 +1,7 @@
 # Utility Scripts
 
+![CI](https://github.com/karimvshade-a11y/ecu-tool/actions/workflows/test.yml/badge.svg)
+
 These scripts were used during the development and validation of the MS43
 checksum algorithm. They are not part of the main tool, but are kept for
 reference and reproducibility.
