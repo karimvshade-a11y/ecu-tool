@@ -1,11 +1,12 @@
 import { ChecksumPlugin } from './types';
 import { plugin as ms43Plugin } from '../plugins/ms43_2sum';
+import { plugin as ms43_5sum } from '../plugins/ms43_5sum';
 
 const plugins: Map<string, ChecksumPlugin> = new Map();
-// Register the built‑in 2‑sum plugin under the name 'ms43'
 plugins.set(ms43Plugin.name, ms43Plugin);
+plugins.set(ms43_5sum.name, ms43_5sum);
 
-// TODO: auto‑discover additional plugins from src/plugins/ in a future update
+// Later: auto‑discover by scanning src/plugins/*.ts
 
 export function getPlugin(name: string): ChecksumPlugin {
   const p = plugins.get(name);
