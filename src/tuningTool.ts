@@ -9,7 +9,57 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const DEFAULT_XDF = path.join(DATA_DIR, 'Siemens_MS43_430069_512K.xdf');
 const DEFAULT_BIN = path.join(DATA_DIR, 'MS43_WBABW510X0PK46741_430069_512KB.bin');
 
+// ---------------------------------------------------------------------------
+// Pure, testable map I/O helpers (no global state)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read raw map values from a buffer (no global state, no equation applied).
+ * Returns a 2D array of numbers.
+ */
+export function readMapValues(
+  buffer: Buffer,
+  mapDef: { address: number; rows: number; cols: number; elementSizeBits: number; outputType?: any }
+): number[][] {
+  const reader = new BinaryReader(buffer);
+  return reader.readBlock(
+    mapDef.address,
+    mapDef.rows,
+    mapDef.cols,
+    mapDef.elementSizeBits,
+    mapDef.outputType,
+    undefined   // raw values only, no equation
+  );
+}
+
+/**
+ * Write a single cell value into a buffer (in-place, pure).
+ * Throws on unsupported bit size.
+ */
+export function writeMapCell(
+  buffer: Buffer,
+  mapDef: { address: number; rows: number; cols: number; elementSizeBits: number },
+  row: number,
+  col: number,
+  value: number
+): void {
+  const cellSizeBytes = mapDef.elementSizeBits / 8;
+  const offset = mapDef.address + (row * mapDef.cols + col) * cellSizeBytes;
+  if (mapDef.elementSizeBits === 8) {
+    buffer.writeUInt8(value & 0xff, offset);
+  } else if (mapDef.elementSizeBits === 16) {
+    buffer.writeUInt16LE(value & 0xffff, offset);
+  } else if (mapDef.elementSizeBits === 32) {
+    buffer.writeUInt32LE(value >>> 0, offset);
+  } else {
+    throw new Error(`Unsupported element size: ${mapDef.elementSizeBits}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Singleton cache for the loaded definitions and binary data
+// ---------------------------------------------------------------------------
+
 let maps: any[] = [];
 let buffer: Buffer | null = null;
 let reader: BinaryReader | null = null;
@@ -57,17 +107,7 @@ export function editMap(mapName: string, row: number, col: number, rawValue: num
         throw new Error(`Cell [${row}][${col}] is out of range for a ${map.rows}x${map.cols} map.`);
     }
 
-    const cellSizeBytes = map.elementSizeBits / 8;
-    const offset = map.address + (row * map.cols + col) * cellSizeBytes;
-    if (map.elementSizeBits === 8) {
-        buffer.writeUInt8(rawValue & 0xff, offset);
-    } else if (map.elementSizeBits === 16) {
-        buffer.writeUInt16LE(rawValue & 0xffff, offset); // MS43 is little-endian
-    } else if (map.elementSizeBits === 32) {
-        buffer.writeUInt32LE(rawValue >>> 0, offset);
-    } else {
-        throw new Error(`Unsupported element size: ${map.elementSizeBits}`);
-    }
+    writeMapCell(buffer, map, row, col, rawValue);
 
     // Save the modified binary next to the original
     const outPath = loadedBinPath + '.modified';
