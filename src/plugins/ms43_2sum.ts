@@ -7,7 +7,7 @@
  * implements the 2‑checksum layout used by the above binary.
  */
 import { crc16xmodem } from 'crc';
-import { ChecksumPlugin } from './types';
+import { ChecksumPlugin } from '../checksums/types';
 
 function crc16Custom(buf: Buffer, poly: number, init: number): number {
   let crc = init & 0xffff;
@@ -25,7 +25,7 @@ function crc16Custom(buf: Buffer, poly: number, init: number): number {
   return crc;
 }
 
-export const ms43Plugin: ChecksumPlugin = {
+export const plugin: ChecksumPlugin = {
   name: 'ms43',
   validated: true,
   correct(buffer: Buffer) {

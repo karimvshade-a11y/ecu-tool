@@ -1,6 +1,5 @@
-// tests/checksums/ms43.test.ts
 import { describe, it, expect } from 'vitest';
-import { ms43Plugin } from '../../src/checksums/ms43';
+import { plugin as ms43Plugin } from '../../src/plugins/ms43_2sum';
 
 function makeTestBin(progFill: number, calFill: number): Buffer {
   const buf = Buffer.alloc(0x80000, 0xFF);
@@ -14,7 +13,6 @@ function makeTestBin(progFill: number, calFill: number): Buffer {
 describe('MS43 checksum plugin', () => {
   it('computes correct program and calibration CRCs on a known binary', () => {
     const bin = makeTestBin(0x12, 0x34);
-
     const patches = ms43Plugin.correct(bin);
 
     expect(patches).toHaveLength(2);
@@ -23,7 +21,7 @@ describe('MS43 checksum plugin', () => {
     expect(progPatch.offset).toBe(0x7FFE0);
     expect(calPatch.offset).toBe(0x7FFFE);
 
-    // Known expected values for this fill pattern
+    // Known expected values (from earlier verification)
     expect(progPatch.value).toBe(0xA388);
     expect(calPatch.value).toBe(0x949A);
   });
@@ -35,7 +33,6 @@ describe('MS43 checksum plugin', () => {
     const progCrc = patches.find(p => p.offset === 0x7FFE0)?.value;
     const calCrc = patches.find(p => p.offset === 0x7FFFE)?.value;
 
-    // They should never be equal for a non-trivial binary
     expect(progCrc).toBeDefined();
     expect(calCrc).toBeDefined();
     expect(progCrc).not.toBe(calCrc);
