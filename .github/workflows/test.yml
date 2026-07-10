@@ -19,5 +19,6 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
+      - run: npx tsc          # <--- THIS IS THE MISSING PIECE
       - run: npm test
       - run: npm run test:integration

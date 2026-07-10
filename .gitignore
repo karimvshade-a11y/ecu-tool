@@ -1,7 +1,12 @@
+# Ignore standard junk
 node_modules/
 dist/
 *.modified
 *.modified.fixed
 *.edit-log.json
-*.bin
 .env
+
+# IGNORE all .bin files...
+*.bin
+# ...BUT DO NOT IGNORE the specific test data!
+!data/*.bin
