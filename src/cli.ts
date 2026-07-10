@@ -2,26 +2,25 @@
 import { Command } from 'commander';
 import { loadAllMaps, listMaps, readMap, editMap, exportMap, revertEdit } from './tuningTool';
 import { diffBins } from './diff';
-
 import { getPlugin } from './checksums';
 import { fixChecksum, validateChecksum } from './checksum';
-
- 
 
 const program = new Command();
 
 program
     .name('ecu-tool')
-    .description('Professional ECU Calibration Tool – Siemens MS43')
+    .description('Universal ECU Calibration Tool')
     .version('1.0.0')
-    .option('-x, --xdf <path>', 'XDF definition file (default: bundled MS43 XDF)')
-    .option('-b, --bin <path>', 'ECU binary dump (default: bundled MS43 bin)');
+    .option('-x, --xdf <path>', 'XDF definition file (required)')
+    .option('-b, --bin <path>', 'ECU binary file (required)');
 
-// Load maps once before any command runs
 let mapsLoaded = false;
 const ensureLoaded = async () => {
     if (!mapsLoaded) {
         const opts = program.opts();
+        if (!opts.xdf || !opts.bin) {
+            throw new Error('Both --xdf and --bin are required. Use -x <xdf> -b <bin> before the command.');
+        }
         await loadAllMaps(opts.xdf, opts.bin);
         mapsLoaded = true;
     }
@@ -52,18 +51,20 @@ program.command('edit')
     .argument('<row>', 'Row index (0-based)')
     .argument('<col>', 'Column index (0-based)')
     .argument('<value>', 'New raw value to write')
-    .action(async (mapName, row, col, value) => {
+    .option('-e, --ecu <name>', 'Checksum plugin to apply after edit (e.g., ms43)')
+    .action(async (mapName, row, col, value, options) => {
         await ensureLoaded();
-        editMap(mapName, parseInt(row), parseInt(col), parseFloat(value));
+        editMap(mapName, parseInt(row), parseInt(col), parseFloat(value), options.ecu);
     });
 
- program.command('revert')
+program.command('revert')
     .description('Revert a previous edit using the edit log')
     .argument('<mapName>', 'Map name to revert')
-    .option('-e, --entry <index>', 'Log entry index to revert (default: last edit for this map)')
+    .option('-n, --entry <index>', 'Log entry index to revert (default: last edit for this map)')
+    .option('-e, --ecu <name>', 'Checksum plugin to apply after revert')
     .action(async (mapName, options) => {
         await ensureLoaded();
-        revertEdit(mapName, options.entry ? parseInt(options.entry, 10) : undefined);
+        revertEdit(mapName, options.entry ? parseInt(options.entry, 10) : undefined, options.ecu);
     });
 
 program.command('export')
@@ -77,12 +78,11 @@ program.command('export')
 
 program.command('diff')
     .description('Compare two binary files map-by-map (engineering values)')
-    .argument('<file1>', 'First binary file (e.g. stock)')
-    .argument('<file2>', 'Second binary file (e.g. tuned)')
+    .argument('<file1>', 'First binary file')
+    .argument('<file2>', 'Second binary file')
     .option('-m, --map <name>', 'Only diff maps containing this string')
     .option('-j, --json', 'Output as JSON instead of a table')
     .action(async (file1, file2, options) => {
-        // diff loads the XDF itself - no need to load the default binary
         await diffBins(file1, file2, options.map, options.json, program.opts().xdf);
     });
 
@@ -91,13 +91,11 @@ program.command('checksum')
     .argument('<file>', 'binary file to correct')
     .option('-e, --ecu <name>', 'checksum plugin to use', 'ms43')
     .action((file, options) => {
-        // Checksum works on the raw binary only - no XDF/map load needed
         const plugin = getPlugin(options.ecu);
         fixChecksum(file, plugin);
-    });  
+    });
 
-
-    program.command('validate')
+program.command('validate')
     .description('Verify checksums in a binary without modifying it')
     .argument('<file>', 'binary file to check')
     .option('-e, --ecu <name>', 'checksum plugin to use', 'ms43')

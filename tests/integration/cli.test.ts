@@ -88,7 +88,7 @@ describe('CLI integration: edit', () => {
     const last = log[log.length - 1];
     expect(last.mapName).toBe(MAP_NAME);
     expect(last.newRawValue).toBe(1234);
-    expect(last.checksumStatus).toMatch(/corrected|failed/);
+    expect(last.checksumStatus).toMatch(/corrected|failed|skipped/);
     expect(typeof last.timestamp).toBe('string');
   });
 

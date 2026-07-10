@@ -6,10 +6,6 @@ import { getPlugin } from './checksums';
 import { fixChecksum } from './checksum';
 import chalk from 'chalk';
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const DEFAULT_XDF = path.join(DATA_DIR, 'Siemens_MS43_430069_512K.xdf');
-const DEFAULT_BIN = path.join(DATA_DIR, 'MS43_WBABW510X0PK46741_430069_512KB.bin');
-
 // ---------------------------------------------------------------------------
 // Edit log types and helper
 // ---------------------------------------------------------------------------
@@ -22,7 +18,7 @@ interface EditLogEntry {
   oldRawValue: number;
   newRawValue: number;
   timestamp: string;
-  checksumStatus: 'corrected' | 'failed';
+  checksumStatus: 'corrected' | 'failed' | 'skipped';
 }
 
 function recordEditLog(binPath: string, entry: EditLogEntry): void {
@@ -45,10 +41,6 @@ function recordEditLog(binPath: string, entry: EditLogEntry): void {
 // Pure, testable map I/O helpers (no global state)
 // ---------------------------------------------------------------------------
 
-/**
- * Read raw map values from a buffer (no global state, no equation applied).
- * Returns a 2D array of numbers.
- */
 export function readMapValues(
   buffer: Buffer,
   mapDef: { address: number; rows: number; cols: number; elementSizeBits: number; outputType?: any }
@@ -60,14 +52,10 @@ export function readMapValues(
     mapDef.cols,
     mapDef.elementSizeBits,
     mapDef.outputType,
-    undefined   // raw values only, no equation
+    undefined
   );
 }
 
-/**
- * Write a single cell value into a buffer (in-place, pure).
- * Throws on unsupported bit size.
- */
 export function writeMapCell(
   buffer: Buffer,
   mapDef: { address: number; rows: number; cols: number; elementSizeBits: number },
@@ -95,12 +83,12 @@ export function writeMapCell(
 let maps: any[] = [];
 let buffer: Buffer | null = null;
 let reader: BinaryReader | null = null;
-let loadedBinPath = DEFAULT_BIN;
+let loadedBinPath: string;
 
-export async function loadAllMaps(xdfPath: string = DEFAULT_XDF, binPath: string = DEFAULT_BIN): Promise<void> {
+export async function loadAllMaps(xdfPath: string, binPath: string): Promise<void> {
     loadedBinPath = binPath;
     buffer = fs.readFileSync(binPath);
-    reader = new BinaryReader(buffer); // shares the buffer so edits are visible to reads
+    reader = new BinaryReader(buffer);
     maps = await new XdfLoader().loadXdf(xdfPath);
     console.error(`Loaded ${maps.length} maps and ${buffer.length} bytes binary.`);
 }
@@ -149,14 +137,13 @@ export function readMap(mapName: string, engineering: boolean, json?: boolean) {
     }
 }
 
-export function editMap(mapName: string, row: number, col: number, rawValue: number) {
+export function editMap(mapName: string, row: number, col: number, rawValue: number, ecu?: string) {
     const map = findMap(mapName);
     if (!buffer) throw new Error('Binary not loaded');
     if (row < 0 || row >= map.rows || col < 0 || col >= map.cols) {
         throw new Error(`Cell [${row}][${col}] is out of range for a ${map.rows}x${map.cols} map.`);
     }
 
-    // Read old value before overwriting
     const cellSizeBytes = map.elementSizeBits / 8;
     const offset = map.address + (row * map.cols + col) * cellSizeBytes;
     let oldRawValue: number;
@@ -170,25 +157,25 @@ export function editMap(mapName: string, row: number, col: number, rawValue: num
         throw new Error(`Unsupported element size: ${map.elementSizeBits}`);
     }
 
-    // Apply the edit
     writeMapCell(buffer, map, row, col, rawValue);
 
-    // Save the modified binary next to the original
     const outPath = loadedBinPath + '.modified';
     fs.writeFileSync(outPath, buffer);
     console.log(`Wrote ${rawValue} to ${map.name}[${row}][${col}]. Saved: ${outPath}`);
 
-    let checksumStatus: EditLogEntry['checksumStatus'] = 'failed';
-    try {
-        console.log('Applying automatic checksum correction...');
-        const plugin = getPlugin('ms43');
-        fixChecksum(outPath, plugin);
-        checksumStatus = 'corrected';
-    } catch (err) {
-        console.error('Checksum correction failed. Do not flash!', err);
+    let checksumStatus: EditLogEntry['checksumStatus'] = 'skipped';
+    if (ecu) {
+        try {
+            console.log('Applying automatic checksum correction...');
+            const plugin = getPlugin(ecu);
+            fixChecksum(outPath, plugin);
+            checksumStatus = 'corrected';
+        } catch (err) {
+            console.error('Checksum correction failed. Do not flash!', err);
+            checksumStatus = 'failed';
+        }
     }
 
-    // Record the edit in the persistent audit trail
     recordEditLog(loadedBinPath, {
         mapName: map.name,
         address: map.address,
@@ -201,18 +188,16 @@ export function editMap(mapName: string, row: number, col: number, rawValue: num
     });
 }
 
-export function revertEdit(mapName: string, entryIndex?: number) {
+export function revertEdit(mapName: string, entryIndex?: number, ecu?: string) {
     if (!buffer) throw new Error('Binary not loaded');
 
-    const map = findMap(mapName); // uses fuzzy matching – same as edit/read
+    const map = findMap(mapName);
     const logPath = loadedBinPath + '.edit-log.json';
     if (!fs.existsSync(logPath)) {
         throw new Error(`No edit log found at ${logPath}. Nothing to revert.`);
     }
 
     const log: EditLogEntry[] = JSON.parse(fs.readFileSync(logPath, 'utf8'));
-
-    // Filter logs for the resolved map's exact name
     const mapLogs = log
         .map((entry, idx) => ({ entry, idx }))
         .filter(({ entry }) => entry.mapName === map.name);
@@ -228,7 +213,6 @@ export function revertEdit(mapName: string, entryIndex?: number) {
         }
         targetIdx = entryIndex;
     } else {
-        // Default: last edit for this map
         targetIdx = mapLogs[mapLogs.length - 1].idx;
     }
 
@@ -247,14 +231,17 @@ export function revertEdit(mapName: string, entryIndex?: number) {
     fs.writeFileSync(outPath, buffer);
     console.log(`Reverted ${map.name}[${row}][${col}] to ${oldValue} (was ${targetEntry.newRawValue}). Saved: ${outPath}`);
 
-    let checksumStatus: EditLogEntry['checksumStatus'] = 'failed';
-    try {
-        console.log('Applying automatic checksum correction...');
-        const plugin = getPlugin('ms43');
-        fixChecksum(outPath, plugin);
-        checksumStatus = 'corrected';
-    } catch (err) {
-        console.error('Checksum correction failed. Do not flash!', err);
+    let checksumStatus: EditLogEntry['checksumStatus'] = 'skipped';
+    if (ecu) {
+        try {
+            console.log('Applying automatic checksum correction...');
+            const plugin = getPlugin(ecu);
+            fixChecksum(outPath, plugin);
+            checksumStatus = 'corrected';
+        } catch (err) {
+            console.error('Checksum correction failed. Do not flash!', err);
+            checksumStatus = 'failed';
+        }
     }
 
     recordEditLog(loadedBinPath, {
@@ -279,7 +266,6 @@ export function exportMap(mapName: string, outputPath?: string) {
     console.log(`Exported ${map.name} to ${filePath}`);
 }
 
-// Helper: find a map by name (exact match first, then substring)
 function findMap(name: string): any {
     const needle = name.toLowerCase();
     const exact = maps.filter((m: any) => m.name.toLowerCase() === needle);
@@ -294,7 +280,6 @@ function findMap(name: string): any {
     return matches[0];
 }
 
-// Helper: read a map's data as a 2D array (raw or engineering units)
 function readMapData(map: any, engineering: boolean): number[][] {
     if (!reader) throw new Error('Binary not loaded');
     return reader.readBlock(
@@ -307,31 +292,24 @@ function readMapData(map: any, engineering: boolean): number[][] {
     );
 }
 
-// Helper: print a 2D array as a colored heatmap table
 function printTable(data: number[][]) {
     if (data.length === 0) return;
-
-    // Find global min & max across all values (excluding row/col headers if any)
     const flat: number[] = [];
-    for (const row of data) {
-        for (const val of row) flat.push(val);
-    }
+    for (const row of data) for (const val of row) flat.push(val);
     const min = Math.min(...flat);
     const max = Math.max(...flat);
-    const range = max - min || 1; // avoid division by zero
+    const range = max - min || 1;
 
-    // Column headers
     const colCount = data[0].length;
     console.log('     ' + Array.from({ length: colCount }, (_, i) => i.toString().padStart(6)).join(''));
     console.log('     ' + '-'.repeat(colCount * 6));
 
-    // Data rows with heatmap colors
     for (let r = 0; r < data.length; r++) {
         const rowLabel = r.toString().padStart(3) + ' |';
         let rowStr = rowLabel;
         for (let c = 0; c < data[r].length; c++) {
             const val = data[r][c];
-            const ratio = (val - min) / range; // 0 = coldest, 1 = hottest
+            const ratio = (val - min) / range;
             let colorFn: chalk.Chalk;
             if (ratio < 0.25) colorFn = chalk.blue;
             else if (ratio < 0.5) colorFn = chalk.cyan;
@@ -341,5 +319,5 @@ function printTable(data: number[][]) {
         }
         console.log(rowStr);
     }
-    console.log(''); // blank line after table
+    console.log('');
 }
