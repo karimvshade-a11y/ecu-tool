@@ -25,6 +25,40 @@ export function fixChecksum(file: string, plugin: ChecksumPlugin): string {
     return outPath;
 }
 
+/**
+ * Validate checksums without modifying the file.
+ * Returns true if all checksums are already correct.
+ */
+export function validateChecksum(file: string, plugin: ChecksumPlugin): boolean {
+    const buffer = fs.readFileSync(file);
+
+    if (!plugin.validated) {
+        console.warn('*** WARNING: checksum plugin "' + plugin.name + '" is UNVALIDATED. Results may not be trustworthy.');
+    }
+
+    const patches = plugin.correct(buffer);
+    let allValid = true;
+
+    for (const p of patches) {
+        const stored = p.size === 2
+            ? buffer.readUInt16LE(p.offset)
+            : buffer.readUInt32LE(p.offset);
+        const ok = stored === (p.value & ((1 << (p.size * 8)) - 1));
+        const label = p.label || ('0x' + p.offset.toString(16));
+        const storedHex = stored.toString(16).toUpperCase().padStart(p.size * 2, '0');
+        const computedHex = p.value.toString(16).toUpperCase().padStart(p.size * 2, '0');
+        console.log(`${label}: stored=0x${storedHex} computed=0x${computedHex} ${ok ? 'OK' : 'MISMATCH'}`);
+        if (!ok) allValid = false;
+    }
+
+    if (allValid) {
+        console.log('All checksums are correct.');
+    } else {
+        console.log('Checksums need correction. Run "checksum" to fix.');
+    }
+    return allValid;
+}
+
 function applyPatch(buffer: Buffer, p: Patch): void {
     if (p.offset < 0 || p.offset + p.size > buffer.length) {
         throw new Error(`Patch "${p.label || '?'}" at 0x${p.offset.toString(16)} (${p.size} bytes) is out of bounds.`);

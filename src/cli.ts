@@ -1,9 +1,12 @@
 #!/usr/bin/env ts-node
 import { Command } from 'commander';
-import { loadAllMaps, listMaps, readMap, editMap, exportMap } from './tuningTool';
+import { loadAllMaps, listMaps, readMap, editMap, exportMap, revertEdit } from './tuningTool';
 import { diffBins } from './diff';
-import { fixChecksum } from './checksum';
+
 import { getPlugin } from './checksums';
+import { fixChecksum, validateChecksum } from './checksum';
+
+ 
 
 const program = new Command();
 
@@ -37,9 +40,10 @@ program.command('read')
     .description('Read a map and display as a table')
     .argument('<mapName>', 'Exact map name or a substring to match one map')
     .option('-e, --engineering', 'Show engineering values only (default: raw + engineering)')
+    .option('-j, --json', 'Output as JSON instead of a table')
     .action(async (mapName, options) => {
         await ensureLoaded();
-        readMap(mapName, options.engineering);
+        readMap(mapName, options.engineering, options.json);
     });
 
 program.command('edit')
@@ -51,6 +55,15 @@ program.command('edit')
     .action(async (mapName, row, col, value) => {
         await ensureLoaded();
         editMap(mapName, parseInt(row), parseInt(col), parseFloat(value));
+    });
+
+ program.command('revert')
+    .description('Revert a previous edit using the edit log')
+    .argument('<mapName>', 'Map name to revert')
+    .option('-e, --entry <index>', 'Log entry index to revert (default: last edit for this map)')
+    .action(async (mapName, options) => {
+        await ensureLoaded();
+        revertEdit(mapName, options.entry ? parseInt(options.entry, 10) : undefined);
     });
 
 program.command('export')
@@ -81,6 +94,17 @@ program.command('checksum')
         // Checksum works on the raw binary only - no XDF/map load needed
         const plugin = getPlugin(options.ecu);
         fixChecksum(file, plugin);
+    });  
+
+
+    program.command('validate')
+    .description('Verify checksums in a binary without modifying it')
+    .argument('<file>', 'binary file to check')
+    .option('-e, --ecu <name>', 'checksum plugin to use', 'ms43')
+    .action((file, options) => {
+        const plugin = getPlugin(options.ecu);
+        const valid = validateChecksum(file, plugin);
+        if (!valid) process.exitCode = 1;
     });
 
 program.parseAsync(process.argv).catch((err) => {

@@ -4,10 +4,42 @@ import { XdfLoader } from './XdfLoader';
 import { BinaryReader } from './BinaryReader'; 
 import { getPlugin } from './checksums'; 
 import { fixChecksum } from './checksum';
+import chalk from 'chalk';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DEFAULT_XDF = path.join(DATA_DIR, 'Siemens_MS43_430069_512K.xdf');
 const DEFAULT_BIN = path.join(DATA_DIR, 'MS43_WBABW510X0PK46741_430069_512KB.bin');
+
+// ---------------------------------------------------------------------------
+// Edit log types and helper
+// ---------------------------------------------------------------------------
+
+interface EditLogEntry {
+  mapName: string;
+  address: number;
+  row: number;
+  col: number;
+  oldRawValue: number;
+  newRawValue: number;
+  timestamp: string;
+  checksumStatus: 'corrected' | 'failed';
+}
+
+function recordEditLog(binPath: string, entry: EditLogEntry): void {
+  const logPath = binPath + '.edit-log.json';
+  let log: EditLogEntry[] = [];
+  if (fs.existsSync(logPath)) {
+    try {
+      const raw = fs.readFileSync(logPath, 'utf8');
+      log = JSON.parse(raw);
+      if (!Array.isArray(log)) log = [];
+    } catch {
+      log = [];
+    }
+  }
+  log.push(entry);
+  fs.writeFileSync(logPath, JSON.stringify(log, null, 2), 'utf8');
+}
 
 // ---------------------------------------------------------------------------
 // Pure, testable map I/O helpers (no global state)
@@ -85,18 +117,35 @@ export function listMaps(filter?: string) {
     console.log(`\nTotal: ${filtered.length} maps`);
 }
 
-export function readMap(mapName: string, engineering: boolean) {
+export function readMap(mapName: string, engineering: boolean, json?: boolean) {
     const map = findMap(mapName);
+    const rawData = readMapData(map, false);
+    const engData = readMapData(map, true);
+
+    if (json) {
+        const output = {
+            mapName: map.name,
+            address: map.address,
+            rows: map.rows,
+            cols: map.cols,
+            elementSizeBits: map.elementSizeBits,
+            equation: map.mathEquation,
+            raw: rawData,
+            engineering: engData,
+        };
+        console.log(JSON.stringify(output, null, 2));
+        return;
+    }
 
     console.log(`\nMap: ${map.name}  (${map.rows}x${map.cols}, ${map.elementSizeBits}-bit)  Equation: ${map.mathEquation}`);
     if (engineering) {
         console.log('Engineering values:');
-        printTable(readMapData(map, true));
+        printTable(engData);
     } else {
         console.log('Raw values:');
-        printTable(readMapData(map, false));
+        printTable(rawData);
         console.log('\nEngineering values:');
-        printTable(readMapData(map, true));
+        printTable(engData);
     }
 }
 
@@ -107,6 +156,21 @@ export function editMap(mapName: string, row: number, col: number, rawValue: num
         throw new Error(`Cell [${row}][${col}] is out of range for a ${map.rows}x${map.cols} map.`);
     }
 
+    // Read old value before overwriting
+    const cellSizeBytes = map.elementSizeBits / 8;
+    const offset = map.address + (row * map.cols + col) * cellSizeBytes;
+    let oldRawValue: number;
+    if (map.elementSizeBits === 8) {
+        oldRawValue = buffer.readUInt8(offset);
+    } else if (map.elementSizeBits === 16) {
+        oldRawValue = buffer.readUInt16LE(offset);
+    } else if (map.elementSizeBits === 32) {
+        oldRawValue = buffer.readUInt32LE(offset);
+    } else {
+        throw new Error(`Unsupported element size: ${map.elementSizeBits}`);
+    }
+
+    // Apply the edit
     writeMapCell(buffer, map, row, col, rawValue);
 
     // Save the modified binary next to the original
@@ -114,13 +178,95 @@ export function editMap(mapName: string, row: number, col: number, rawValue: num
     fs.writeFileSync(outPath, buffer);
     console.log(`Wrote ${rawValue} to ${map.name}[${row}][${col}]. Saved: ${outPath}`);
 
+    let checksumStatus: EditLogEntry['checksumStatus'] = 'failed';
     try {
         console.log('Applying automatic checksum correction...');
         const plugin = getPlugin('ms43');
         fixChecksum(outPath, plugin);
+        checksumStatus = 'corrected';
     } catch (err) {
         console.error('Checksum correction failed. Do not flash!', err);
     }
+
+    // Record the edit in the persistent audit trail
+    recordEditLog(loadedBinPath, {
+        mapName: map.name,
+        address: map.address,
+        row,
+        col,
+        oldRawValue,
+        newRawValue: rawValue,
+        timestamp: new Date().toISOString(),
+        checksumStatus,
+    });
+}
+
+export function revertEdit(mapName: string, entryIndex?: number) {
+    if (!buffer) throw new Error('Binary not loaded');
+
+    const map = findMap(mapName); // uses fuzzy matching – same as edit/read
+    const logPath = loadedBinPath + '.edit-log.json';
+    if (!fs.existsSync(logPath)) {
+        throw new Error(`No edit log found at ${logPath}. Nothing to revert.`);
+    }
+
+    const log: EditLogEntry[] = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+
+    // Filter logs for the resolved map's exact name
+    const mapLogs = log
+        .map((entry, idx) => ({ entry, idx }))
+        .filter(({ entry }) => entry.mapName === map.name);
+
+    if (mapLogs.length === 0) {
+        throw new Error(`No edits found for map "${map.name}".`);
+    }
+
+    let targetIdx: number;
+    if (entryIndex !== undefined) {
+        if (entryIndex < 0 || entryIndex >= log.length) {
+            throw new Error(`Entry index ${entryIndex} is out of range (0-${log.length - 1}).`);
+        }
+        targetIdx = entryIndex;
+    } else {
+        // Default: last edit for this map
+        targetIdx = mapLogs[mapLogs.length - 1].idx;
+    }
+
+    const targetEntry = log[targetIdx];
+    if (targetEntry.mapName !== map.name) {
+        throw new Error(`Entry at index ${targetIdx} belongs to map "${targetEntry.mapName}", not "${map.name}".`);
+    }
+
+    const row = targetEntry.row;
+    const col = targetEntry.col;
+    const oldValue = targetEntry.oldRawValue;
+
+    writeMapCell(buffer, map, row, col, oldValue);
+
+    const outPath = loadedBinPath + '.modified';
+    fs.writeFileSync(outPath, buffer);
+    console.log(`Reverted ${map.name}[${row}][${col}] to ${oldValue} (was ${targetEntry.newRawValue}). Saved: ${outPath}`);
+
+    let checksumStatus: EditLogEntry['checksumStatus'] = 'failed';
+    try {
+        console.log('Applying automatic checksum correction...');
+        const plugin = getPlugin('ms43');
+        fixChecksum(outPath, plugin);
+        checksumStatus = 'corrected';
+    } catch (err) {
+        console.error('Checksum correction failed. Do not flash!', err);
+    }
+
+    recordEditLog(loadedBinPath, {
+        mapName: targetEntry.mapName,
+        address: targetEntry.address,
+        row,
+        col,
+        oldRawValue: targetEntry.newRawValue,
+        newRawValue: targetEntry.oldRawValue,
+        timestamp: new Date().toISOString(),
+        checksumStatus,
+    });
 }
 
 export function exportMap(mapName: string, outputPath?: string) {
@@ -161,7 +307,39 @@ function readMapData(map: any, engineering: boolean): number[][] {
     );
 }
 
-// Helper: print a 2D array as a table
+// Helper: print a 2D array as a colored heatmap table
 function printTable(data: number[][]) {
-    console.table(data);
+    if (data.length === 0) return;
+
+    // Find global min & max across all values (excluding row/col headers if any)
+    const flat: number[] = [];
+    for (const row of data) {
+        for (const val of row) flat.push(val);
+    }
+    const min = Math.min(...flat);
+    const max = Math.max(...flat);
+    const range = max - min || 1; // avoid division by zero
+
+    // Column headers
+    const colCount = data[0].length;
+    console.log('     ' + Array.from({ length: colCount }, (_, i) => i.toString().padStart(6)).join(''));
+    console.log('     ' + '-'.repeat(colCount * 6));
+
+    // Data rows with heatmap colors
+    for (let r = 0; r < data.length; r++) {
+        const rowLabel = r.toString().padStart(3) + ' |';
+        let rowStr = rowLabel;
+        for (let c = 0; c < data[r].length; c++) {
+            const val = data[r][c];
+            const ratio = (val - min) / range; // 0 = coldest, 1 = hottest
+            let colorFn: chalk.Chalk;
+            if (ratio < 0.25) colorFn = chalk.blue;
+            else if (ratio < 0.5) colorFn = chalk.cyan;
+            else if (ratio < 0.75) colorFn = chalk.yellow;
+            else colorFn = chalk.red;
+            rowStr += colorFn(val.toString().padStart(6));
+        }
+        console.log(rowStr);
+    }
+    console.log(''); // blank line after table
 }
