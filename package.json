@@ -7,11 +7,15 @@
     "ecu-tool": "./bin/ecu-tool.js"
   },
   "scripts": {
-    "start": "ts-node src/cli.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "coverage": "vitest run --coverage"
-  },
+  "start": "ts-node src/cli.ts",
+  "build": "tsc",
+  "test": "vitest run",
+  "test:watch": "vitest",
+  "coverage": "vitest run --coverage",
+  "pretest:integration": "tsc",
+  "test:integration": "vitest run --config vitest.config.ts tests/integration",
+  "test:all": "npm test && npm run test:integration"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -19,6 +23,7 @@
     "@types/node": "^26.1.1",
     "@types/xml2js": "^0.4.14",
     "@vitest/coverage-v8": "^4.1.10",
+    "execa": "^9.6.1",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
